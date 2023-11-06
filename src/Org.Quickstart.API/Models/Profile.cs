@@ -1,14 +1,23 @@
 ﻿using System;
+using System.Collections.Generic;
+
 namespace Org.Quickstart.API.Models
 {
     public class Profile
     {
-        public Guid Pid { get; set; }
-        public string FirstName { get; set; }
-        public string LastName { get; set; }
-        public string Email { get; set; }
-        public decimal OnBoardCredit { get; set; }
+        public string username { get; set; }
+        public string password { get; set; }
+        public string email { get; set; }
+        public string firstName { get; set; }
+        public string lastName { get; set; }
 
+        public string phoneNumber { get; set; }
+        public string gender { get; set; }
+        public DateTime registrationDate { get; set; }
+        public Address Address { get; set; }
+        public ICollection<Order> Orders { get; set; }
+
+        /*
         private string _password;
         public string Password {
             get
@@ -29,5 +38,19 @@ namespace Org.Quickstart.API.Models
             this.OnBoardCredit -= amount;
             to.OnBoardCredit += amount;
         }
+        */
+        public string GenerateNextUserId(string lastUserId)
+        {
+            if (string.IsNullOrEmpty(lastUserId))
+            {
+                return "u1";
+            }
+
+            int lastNumber = int.Parse(lastUserId.Substring(1)); // Extract the numeric part
+            int nextNumber = lastNumber + 1;
+
+            return "u" + nextNumber;
+        }
+
     }
 }

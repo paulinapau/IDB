@@ -1,5 +1,8 @@
 ﻿using System.Threading.Tasks;
 using Couchbase.Extensions.DependencyInjection;
+using Couchbase.KeyValue;
+using Couchbase.Transactions.Config;
+using Couchbase.Transactions;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.Configuration;
@@ -34,6 +37,7 @@ namespace Org.Quickstart.API
         public void ConfigureServices(IServiceCollection services)
         {
 
+          
             //05/25/2021
             //fix for debugging with DEV and QA environments in GitPod
             //DO NOT APPLY to UAT and PROD environments!!!
@@ -66,7 +70,7 @@ namespace Org.Quickstart.API
 
             services.AddControllers();
 
-	        //customize Swagger UI
+            //customize Swagger UI
             services.AddSwaggerGen(c =>
             {
                 c.SwaggerDoc("v1", new OpenApiInfo { 

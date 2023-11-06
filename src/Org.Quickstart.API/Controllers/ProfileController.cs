@@ -14,6 +14,12 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Org.Quickstart.API.Models;
 using Swashbuckle.AspNetCore.Annotations;
+using System.Diagnostics.Metrics;
+using Couchbase.Management.Users;
+using static Couchbase.Core.Diagnostics.Tracing.OuterRequestSpans.ManagerSpan;
+using System.Transactions;
+using Couchbase.Transactions.Error;
+using Couchbase.Core.IO.Operations;
 
 namespace Org.Quickstart.API.Controllers
 {
@@ -37,28 +43,52 @@ namespace Org.Quickstart.API.Controllers
 	        _clusterProvider = clusterProvider;
 	        _bucketProvider = bucketProvider;
             _logger = logger;
-
 	        _couchbaseConfig = options.Value;
-        }
 
-        [HttpGet("{id:Guid}", Name = "UserProfile-GetById")]
-        [SwaggerOperation(OperationId = "UserProfile-GetById", Summary = "Get user profile by Id", Description = "Get a user profile by Id from the request")]
+        }
+      
+        [HttpGet("{id}")]
+       // [HttpGet("{username:string}", Name = "UserProfile-GetById")]
+        //[SwaggerOperation(OperationId = "UserProfile-GetById", Summary = "Get user profile by Id", Description = "Get a user profile by Id from the request")]
         [SwaggerResponse(200, "Returns a report")]
         [SwaggerResponse(404, "Report not found")]
         [SwaggerResponse(500, "Returns an internal error")]
-        public async Task<IActionResult> GetById([FromRoute] Guid id)
+        public async Task<IActionResult> GetById([FromRoute] string id)
         {
             try
             {
                 var bucket = await _bucketProvider.GetBucketAsync(_couchbaseConfig.BucketName);
 
 		        var scope = bucket.Scope(_couchbaseConfig.ScopeName);
-                var collection = await scope.CollectionAsync(_couchbaseConfig.CollectionName); 
-		        var result = await collection.GetAsync(id.ToString());
-                return Ok(result.ContentAs<Profile>());
+                var collection = await scope.CollectionAsync(_couchbaseConfig.CollectionName);
 
+                var transactions = Transactions.Create(bucket.Cluster,
+                               TransactionConfigBuilder.Create().DurabilityLevel(DurabilityLevel.None)
+                             .Build());
+                Profile result = default; 
+                await transactions.RunAsync(async ctx =>
+                {
+                    var docOpt = await ctx.GetAsync(collection, id).ConfigureAwait(false);
+                    if (docOpt!=null)
+                    {
+                        result = docOpt.ContentAs<Profile>(); 
+                    }
+                }).ConfigureAwait(false);
+
+                 return Ok(result);
+               
             }
-	        catch (DocumentNotFoundException)
+            catch (TransactionCommitAmbiguousException e)
+            {
+                return NotFound(("Transaction possibly committed", e));
+               
+            }
+            catch (TransactionFailedException e)
+            {
+                return NotFound(("Transaction did not reach commit point", e));
+               
+            }
+            catch (DocumentNotFoundException)
 	        {
 		        return NotFound();
 		    }
@@ -78,65 +108,128 @@ namespace Org.Quickstart.API.Controllers
         {
             try
             {
-		        if (!string.IsNullOrEmpty(request.Email) && !string.IsNullOrEmpty(request.Password))
+		        if (!string.IsNullOrEmpty(request.email) && !string.IsNullOrEmpty(request.password))
 		        {
 		            var bucket = await _bucketProvider.GetBucketAsync(_couchbaseConfig.BucketName);
 		            var collection = await bucket.CollectionAsync(_couchbaseConfig.CollectionName);
 		            var profile = request.GetProfile();
-                    profile.Pid = Guid.NewGuid();
-		            await collection.InsertAsync(profile.Pid.ToString(), profile);
+                    var newid = profile.GenerateNextUserId(GetLastUserId().Result);
 
-                    return Created($"/api/v1/profile/{profile.Pid}", profile);
-		        }
+                    var transactions = Transactions.Create(bucket.Cluster,
+                                TransactionConfigBuilder.Create().DurabilityLevel(DurabilityLevel.None)
+                              .Build());
+                    try
+                    {
+                            await transactions.RunAsync(async ctx =>
+                            {
+                                var docOpt = await ctx.InsertAsync(collection, newid.ToString(), profile).ConfigureAwait(false);
+                                if (docOpt != null)
+                                {
+                                    profile = docOpt.ContentAs<Profile>();
+                                }
+                               
+                            }).ConfigureAwait(false);
+                           
+                            return Created($"/api/v1/profile/{newid}", profile);
+
+                    }
+                    catch (TransactionFailedException err)
+                    {
+                        return NotFound(err);
+                    }
+                    return UnprocessableEntity();
+                }
 		        else 
 		        {
 		           return UnprocessableEntity();  
 		        }
-
             }
+           
             catch (Exception ex)
             {
                 _logger.LogError(ex.Message);
                 return StatusCode(StatusCodes.Status500InternalServerError, $"Error: {ex.Message} {ex.StackTrace} {Request.GetDisplayUrl()}");
             }
+            
         }
 
-        [HttpPut]
-        [SwaggerOperation(OperationId = "UserProfile-Update", Summary = "Update a user profile", Description = "Update a user profile from the request")]
+        [HttpPut("{id}")]
+       // [SwaggerOperation(OperationId = "UserProfile-Update", Summary = "Update a user profile", Description = "Update a user profile from the request")]
         [SwaggerResponse(200, "Update a user profile")]
         [SwaggerResponse(404, "user profile not found")]
         [SwaggerResponse(500, "Returns an internal error")]
-        public async Task<IActionResult> Update([FromBody] ProfileUpdateRequestCommand request)
+        public async Task<IActionResult> Update([FromRoute] string id, [FromBody] ProfileCreateRequestCommand request)
         {
             try
             {
                 var bucket = await _bucketProvider.GetBucketAsync(_couchbaseConfig.BucketName);
                 var collection = await bucket.CollectionAsync(_couchbaseConfig.CollectionName);
-		
-                var updateResult = await collection.ReplaceAsync<Profile>(request.Pid.ToString(), request.GetProfile());
+                //var result = await collection.GetAsync(id);
+                var transactions = Transactions.Create(bucket.Cluster,
+                               TransactionConfigBuilder.Create().DurabilityLevel(DurabilityLevel.None)
+                             .Build());
+                await transactions.RunAsync(async ctx =>
+                {
+                    var old = await ctx.GetAsync(collection, id).ConfigureAwait(false);
+                    var updatedProfile = new Profile
+                    {
+                        username = request.username,
+                        phoneNumber = request.phoneNumber,
+                        firstName = request.firstName,
+                        lastName = request.lastName,
+                        email = request.email,
+                        password = request.password,
+                        gender = request.gender,
+                        registrationDate = request.registrationDate,
+                        Address = request.Address,
+                        Orders = request.Orders,
+                    };
+
+                    // Replace the document in the collection with the updated content.
+                    _ = await ctx.ReplaceAsync(old, updatedProfile).ConfigureAwait(false);
+                }).ConfigureAwait(false);
+                /*
+                await transactions.RunAsync(async ctx =>
+                {
+                    var anotherDoc = await ctx.GetAsync(collection, id).ConfigureAwait(false);
+                    var content = anotherDoc.ContentAs<dynamic>();
+                    content.put("transactions", "are awesome");
+                    _ = await ctx.ReplaceAsync(anotherDoc, content);
+                }).ConfigureAwait(false);
+                // var updateResult = await collection.ReplaceAsync<Profile>(id, request.GetProfile());
+                */
                 return Ok(request);
 
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex.Message);
-                return StatusCode(StatusCodes.Status500InternalServerError, $"Error: {ex.Message} {ex.StackTrace} {Request.GetDisplayUrl()}");
+                return NotFound(); // Document with the provided id not found
+                //return StatusCode(StatusCodes.Status500InternalServerError, $"Error: {ex.Message} {ex.StackTrace} {Request.GetDisplayUrl()}");
             }
         }
 
 
-        [HttpDelete("{id:Guid}")]
-        [SwaggerOperation(OperationId = "UserProfile-Delete", Summary = "Delete a profile", Description = "Delete a profile from the request")]
+        [HttpDelete("{id}")]
+      // [SwaggerOperation(OperationId = "UserProfile-Delete", Summary = "Delete a profile", Description = "Delete a profile from the request")]
         [SwaggerResponse(200, "Delete a profile")]
         [SwaggerResponse(404, "profile not found")]
         [SwaggerResponse(500, "Returns an internal error")]
-        public async Task<IActionResult> Delete([FromRoute] Guid id)
+        public async Task<IActionResult> Delete([FromRoute] string id)
         {
             try
             {
 		        var bucket = await _bucketProvider.GetBucketAsync(_couchbaseConfig.BucketName);
 		        var collection = await bucket.CollectionAsync(_couchbaseConfig.CollectionName);
-		        await collection.RemoveAsync(id.ToString());
+                var transactions = Transactions.Create(bucket.Cluster,
+                              TransactionConfigBuilder.Create().DurabilityLevel(DurabilityLevel.None)
+                            .Build());
+                await transactions.RunAsync(async ctx =>
+                {
+                    var profile = await ctx.GetAsync(collection, id).ConfigureAwait(false);
+                    await ctx.RemoveAsync(profile).ConfigureAwait(false);
+                }).ConfigureAwait(false);
+               // await collection.RemoveAsync(id);
                 return this.Ok();
             }
             catch (Exception ex)
@@ -145,7 +238,7 @@ namespace Org.Quickstart.API.Controllers
                 return StatusCode(StatusCodes.Status500InternalServerError, ex.Message);
             }
         }
-
+        /*
         [HttpGet]
 	    [Route("/api/v1/profiles")]
         [SwaggerOperation(OperationId = "UserProfile-List", Summary = "Search for user profiles", Description = "Get a list of user profiles from the request")]
@@ -180,9 +273,10 @@ LIMIT $limit OFFSET $skip";
                 return StatusCode(StatusCodes.Status500InternalServerError, $"Error: {ex.Message} {ex.StackTrace} {Request.GetDisplayUrl()}");
             }
         }
-
-        [HttpPost]
-        [Route("/api/v1/transfer")]
+        */
+        /*
+       // [HttpPost]
+       // [Route("/api/v1/transfer")]
         [SwaggerOperation(OperationId = "UserProfile-Transfer", Summary = "Transfer on-board credit", Description = "Transfer on-board credit between two profiles")]
         [SwaggerResponse(200, "On-board credit transferred")]
         [SwaggerResponse(500, "Returns an internal error")]
@@ -203,7 +297,7 @@ LIMIT $limit OFFSET $skip";
                     var toProfileDoc = await ctx.GetAsync(collection, request.Pto.ToString());
                     var toProfile = toProfileDoc.ContentAs<Profile>();
 
-                    fromProfile.TransferTo(toProfile, request.Amount);
+                  //  fromProfile.TransferTo(toProfile, request.Amount);
 
                     await ctx.ReplaceAsync(fromProfileDoc, fromProfile);
                     await ctx.ReplaceAsync(toProfileDoc, toProfile);
@@ -218,6 +312,26 @@ LIMIT $limit OFFSET $skip";
                 _logger.LogError(ex.Message);
                 return StatusCode(StatusCodes.Status500InternalServerError, $"Error: {ex.Message} {ex.StackTrace} {Request.GetDisplayUrl()}");
             }
+        }
+        
+        */
+        [HttpGet]
+        public async Task<string> GetLastUserId()
+        {
+            var bucket = await _bucketProvider.GetBucketAsync(_couchbaseConfig.BucketName);
+            var scope = bucket.Scope(_couchbaseConfig.ScopeName);
+            var collection = await scope.CollectionAsync(_couchbaseConfig.CollectionName);
+            var cluster = await _clusterProvider.GetClusterAsync();
+
+            var query = $"SELECT MAX(META().id) FROM {_couchbaseConfig.BucketName}.{_couchbaseConfig.ScopeName}.{_couchbaseConfig.CollectionName}";
+            var result = await cluster.QueryAsync<MaxIdResult>(query);
+            if (result != null)
+            {
+                var maxId = result.Rows.FirstAsync().Result?.MaxId;
+                return maxId;
+            }
+            else
+                return null;
         }
     }
 }

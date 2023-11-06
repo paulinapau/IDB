@@ -9,7 +9,11 @@ namespace Org.Quickstart.API.Models
         public string Email { get; set; }
         public string Password { get; set; }
         public decimal OnBoardCredit { get; set; }
-
+        public Profile GetProfile()
+        {
+            return null;
+        }
+        /*
 	    public Profile GetProfile()
 	    {
 	        return new Profile
@@ -22,5 +26,6 @@ namespace Org.Quickstart.API.Models
                 OnBoardCredit = this.OnBoardCredit
             };
 	    } 
+        */
     }
 }

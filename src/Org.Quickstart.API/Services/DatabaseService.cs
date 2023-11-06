@@ -116,6 +116,7 @@ namespace Org.Quickstart.API.Services
 				}
 
 				//try to create collection - if fails it's ok the collection probably exists
+				/*
 				try
 				{
 					_logger.LogInformation("**INFO** Creating Collection:  <{CollectionName}> with username: <{Username}> and password:<{Password}> in bucket <{BucketName}>",
@@ -133,6 +134,7 @@ namespace Org.Quickstart.API.Services
 				{
 					_logger.LogWarning($"HttpRequestExcecption when creating collection  {_couchbaseConfig.CollectionName}");
 				}
+				*/
 			}
 			else
 				throw new System.Exception("Can't retreive bucket.");
